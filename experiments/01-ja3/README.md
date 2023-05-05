@@ -1,4 +1,10 @@
-# Experiment
+# JA3 Experiment
+
+## Install Dependencies
+```sh
+python3 -m pip install git+https://github.com/p4lang/p4runtime-shell
+python3 -m pip install dpkt
+```
 
 ## Network Topology
 

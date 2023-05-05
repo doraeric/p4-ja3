@@ -16,6 +16,8 @@ import p4runtime_sh.shell as sh
 from gen_full_netcfg import set_default_net_config
 from utils import p4sh_helper
 from utils.p4sh_helper import P4RTClient
+from utils.entries import drop_by_ja3, clone_tls_client_hello
+from ja3 import calculate_ja3
 
 log = logging.getLogger('p4_control')
 # Do not propagate to root log
@@ -190,14 +192,19 @@ def setup_switch_listen(switch: str, app_exit: threading.Event) -> P4RTClient:
     # Listening
     print('Listening on controller for switch "{}"'.format(switch))
     stream_client = p4sh_helper.StreamClient(client, app_exit)
+    # Receive cloned TLS packets
+    clone_tls_client_hello(client).insert()
 
     # callbacks
     @stream_client.on('packet')
     def packet_in_handler(packet):
-        print('PacketIn.payload')
+        print('%s PacketIn.payload' % switch)
         hexdump(packet.payload)
         ingress_port = int.from_bytes(packet.metadata[0].value, 'big')
         print(f'PacketIn.metadata[0]: ingress_port={ingress_port}')
+        ja3 = calculate_ja3(packet.payload)
+        if ja3 is not None:
+            print(f'ja3 = {ja3}')
 
     @stream_client.on('digest')
     def digest_handler(packet):
@@ -246,7 +253,19 @@ def cmd_each(args):
         app_exit = threading.Event()
         clients = {i: setup_switch_listen(i, app_exit) for i in switches}
 
+        def block_ja3(ja3: str):
+            for client in clients.values():
+                drop_by_ja3(client, ja3).insert()
+
+        def unblock_ja3(ja3: str):
+            for client in clients.values():
+                drop_by_ja3(client, ja3).delete()
+
         # Open IPython shell
+        print('You can block/unblock ja3 in the console with following python '
+              'code:')
+        print('>>> block_ja3(CURL_JA3)')
+        print('>>> unblock_ja3(CURL_JA3)')
         IPython.embed(colors="neutral")
         app_exit.set()
         for client in clients.values():

@@ -52,3 +52,11 @@ def drop_by_ja3(client: P4RTClient, ja3: str):
         if i >= 8:
             break
     return te
+
+
+def clone_tls_client_hello(client: P4RTClient):
+    te = client.TableEntry('ingress.acl.acl')(
+        action='ingress.acl.clone_to_cpu')
+    te.priority = 10
+    te.match['tls_hsk_type'] = '1'
+    return te

@@ -37,6 +37,13 @@ control Acl(
         acl_counter.count();
     }
 
+    action clone_to_cpu() {
+        // https://github.com/p4lang/p4c/blob/main/p4include/v1model.p4#L537
+        // extern void clone(in CloneType type, in bit<32> session);
+        // session: map session to clone port from controll plane
+        clone(CloneType.I2E, (bit<32>)CPU_PORT);
+    }
+
     action set_egress_port(port_t port) {
         stdmeta.egress_spec = port;
         acl_counter.count();
@@ -65,6 +72,7 @@ control Acl(
             meta.l4_src_port        : ternary @name("l4_sport");
             meta.l4_dst_port        : ternary @name("l4_dport");
             // TLS
+            hdr.tls_hsk.msg_type    : ternary @name("tls_hsk_type");
             // ja3[0]
             hdr.tls_client_hello.legacy_version: ternary @name("tls_version");
             // ja3[1]
@@ -275,6 +283,7 @@ control Acl(
         actions = {
             set_egress_port;
             send_to_cpu;
+            clone_to_cpu;
             set_next_hop_id;
             drop;
             nop_acl;
