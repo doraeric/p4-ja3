@@ -1,4 +1,6 @@
-# P4 DDoS Defense
+# P4 JA3
+
+[![demo](https://asciinema.org/a/2wXULbuMtwZtF8A8rilasBTDi.svg)](https://asciinema.org/a/2wXULbuMtwZtF8A8rilasBTDi?autoplay=1)
 
 ## Prerequisites
 
@@ -40,11 +42,4 @@ nc -klvp 3000
 
 # window 2
 ./10_p4_control.py --log tcp:localhost:3000 --topo topos/netcfg.json each -s 1 2 -l -a
-```
-
-## Start traffic generation
-
-```sh
-cd experiments/01-ja3
-./20-bg-traffic.sh
 ```
