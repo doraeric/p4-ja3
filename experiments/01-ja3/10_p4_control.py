@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 import argparse
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from hexdump import hexdump
 import json
 import logging
@@ -8,7 +8,6 @@ import logging.handlers
 import os
 from pathlib import Path
 import readline # noqa
-import time
 import threading
 
 import IPython
@@ -17,7 +16,6 @@ import p4runtime_sh.shell as sh
 from gen_full_netcfg import set_default_net_config
 from utils import p4sh_helper
 from utils.p4sh_helper import P4RTClient
-from utils.threading import EventThread
 
 log = logging.getLogger('p4_control')
 # Do not propagate to root log
@@ -30,25 +28,30 @@ formatter = logging.Formatter(
 default_max_conns = [8, 8, 4]
 default_min_conns = [2, 2, 1]
 
-
-@dataclass
-class IpPairInfo:
-    # the order is: short_get, short_other, long_other
-    index: int
-    client: P4RTClient
-    max_conns: list[int] = field(default_factory=lambda: [8, 8, 4])
-    n_conns: list[int] = field(default_factory=lambda: [0, 0, 0])
-    accu_error: list[int] = field(default_factory=lambda: [0, 0, 0])
-    error_ts: list[int] = field(default_factory=lambda: [0, 0, 0])
+CURL_JA3 = (
+    '771,'
+    '49200-49196-49192-49188-49172-49162-163-159-107-106-57-56-136-135-49202-'
+    '49198-49194-49190-49167-49157-157-61-53-132-49199-49195-49191-49187-'
+    '49171-49161-162-158-103-64-51-50-154-153-69-68-49201-49197-49193-49189-'
+    '49166-49156-156-60-47-150-65-255,'
+    '11-10-13-15-13172-16,'
+    '23-25-28-27-24-26-22-14-13-11-12-9-10,'
+    '0-1-2'
+)
+WGET_JA3 = (
+    '771,'
+    '49196-49287-52393-49325-49162-49195-49286-49324-49161-49160-49200-49291-'
+    '52392-49172-49199-49290-49171-49170-157-49275-49309-53-132-156-49274-'
+    '49308-47-65-10-159-49277-52394-49311-57-136-158-49276-49310-51-69-22,'
+    '5-65281-35-10-11-13,'
+    '23-24-25-21-19,'
+    '0'
+)
 
 
 @dataclass
 class AppContext:
     net_config: dict
-    ip_counter: int = 0
-    ip_pair_info: dict[tuple, IpPairInfo] = field(default_factory=dict)
-    conns: dict = field(default_factory=dict)
-    eth_addr: dict = field(default_factory=dict)
 
 
 _app_context = AppContext(None)
@@ -164,16 +167,6 @@ def setup_one_switch(switch: str) -> P4RTClient:
     return client
 
 
-def to_tcp_key(members: list[bytes]):
-    """Convert bytes to tcp_key for _app_context.conns"""
-    assert len(members) == 4
-    assert all(len(i) == 4 for i in members[:2])
-    ip_str = ['.'.join([str(i) for i in ip]) for ip in members[:2]]
-    tcp_ports = [int.from_bytes(i, 'big') for i in members[2:]]
-    tcp_key = tuple(sorted(zip(ip_str, tcp_ports)))
-    return tcp_key
-
-
 def handle_digest_timestamp(packet):
     members = packet.data[0].struct.members
     ts = int.from_bytes(members[0].bitstring, 'big')
@@ -182,101 +175,8 @@ def handle_digest_timestamp(packet):
     print(f'ipv4 = {ip>>24&0xff}.{ip>>16&0xff}.{ip>>8&0xff}.{ip&0xff}')
 
 
-def req_register_read(client: P4RTClient, index: int = 0):
-    payload = index
-    p = client.PacketOut(b'\2' + payload.to_bytes(2, 'big'))
-    p.metadata['handler'] = '2'
-    p.send()
-
-
-def send_updates(updates: list, client: P4RTClient):
-    if len(updates) == 0:
-        return
-    p = client.PacketOut(b'\3%c' % len(updates) + b''.join(updates))
-    p.metadata['handler'] = '2'
-    p.send()
-
-
-def handle_new_ip(packet, client: P4RTClient):
-    ip_pair_info = _app_context.ip_pair_info
-    members = [i.bitstring for i in packet.data[0].struct.members]
-    ips = members[:2]
-    ip_str = ['.'.join([str(i) for i in ip]) for ip in ips]
-    key = tuple(sorted(ips))
-    if key in ip_pair_info:
-        return
-    index = _app_context.ip_counter
-    _app_context.ip_counter += 1
-    ip_pair_info[key] = IpPairInfo(index=index, client=client)
-    info = ip_pair_info[key]
-    _app_context.eth_addr[ips[0]] = members[2].rjust(6, b"\0")
-    _app_context.eth_addr[ips[1]] = members[3].rjust(6, b"\0")
-    # Initialize ip pair register
-    # instruction, (index, max_short_get, max_short_other, max_long_other)
-    payload = ((index << 12) + (info.max_conns[0] << 8) +
-               (info.max_conns[1] << 4) + info.max_conns[2])
-    p = client.PacketOut(b'\1' + payload.to_bytes(3, 'big'))
-    p.metadata['handler'] = '2'
-    # bidirectional
-    for ip1, ip2 in [ips, ips[::-1]]:
-        te = client.TableEntry('ingress.http_ingress.ip_pair')(
-            action='add_meta')
-        te.match["hdr.ipv4.src_addr"] = ip1
-        te.match["hdr.ipv4.dst_addr"] = ip2
-        te.action['index'] = str(index)
-        te.insert()
-    p.send()
-    log.info('> ip_pair[%s] = %s <-> %s', index, ip_str[0], ip_str[1])
-
-
-def reg_update(index: int, id2: int, op: str, value: int) -> bytes:
-    payload = (index << 24) + (id2 << 16) + (ord(op) << 8) + value
-    payload = payload.to_bytes(7, 'big')
-    return payload
-
-
-def handle_conn_match(packet, p4i: p4sh_helper.P4Info):
-    # names = p4i.get_member_names(packet.digest_id)
-    # members = packet.data[0].struct.members
-    # values = [int.from_bytes(i.bitstring, 'big') for i in members]
-    # msg = dict(zip(names, values))
-    # log.info('conn_match: %s', msg)
-    pass
-
-
 def handle_digest_debug(packet):
     pass
-
-
-def enable_digest(p4i: p4sh_helper.P4Info, name: str) -> None:
-    update = p4i.DigestEntry(name).as_update()
-    sh.client.write_update(update)
-    log.info('Enable digest: %s', name)
-
-
-def clock(pill: threading.Event):
-    while True:
-        now = int(time.time())
-        for info in _app_context.ip_pair_info.values():
-            updates = []
-            for i in range(3):
-                info.accu_error[i] = 0
-                if (info.max_conns[i] < default_max_conns[i] and
-                        now - info.error_ts[i] > 60):
-                    info.max_conns[i] += 1
-                    updates.append(reg_update(info.index, i+3, '+', 1))
-                    log.info(
-                        '> reg_update(index=%s, id2=%s, op=%s, value=%s)',
-                        info.index, i+3, '+', 1
-                    )
-            if len(updates) > 0:
-                p = info.client.PacketOut(
-                    b'\3%c' % len(updates)+b''.join(updates))
-                p.metadata['handler'] = '2'
-                p.send()
-        pill.wait(60)
-        if pill.is_set():
-            break
 
 
 def setup_switch_listen(switch: str, app_exit: threading.Event) -> P4RTClient:
@@ -311,17 +211,13 @@ def setup_switch_listen(switch: str, app_exit: threading.Event) -> P4RTClient:
                    else ('.'.join(str(i) for i in v) if len(v) == 4
                          else ':'.join(f'{i:02x}' for i in v))
                    for k, v in zip(names, members)}
-            log.debug('< %s', msg)
+            log.debug('%s < %s', switch, msg)
         else:
             log.debug(packet)
         if name == 'timestamp_digest_t':
             handle_digest_timestamp(packet)
         elif name == 'debug_digest_t':
             handle_digest_debug(packet)
-        elif name == 'conn_match_t':
-            handle_conn_match(packet, p4i)
-        elif name == 'new_ip_t':
-            handle_new_ip(packet, client)
 
     stream_client.recv_bg()
     return client
@@ -348,8 +244,6 @@ def cmd_each(args):
             client.tear_down()
     else:
         app_exit = threading.Event()
-        time_thread = EventThread(clock, app_exit)
-        time_thread.start()
         clients = {i: setup_switch_listen(i, app_exit) for i in switches}
 
         # Open IPython shell

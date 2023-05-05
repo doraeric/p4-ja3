@@ -24,3 +24,31 @@ def drop_syn(client: P4RTClient, src_ip: bytes, dst_ip: bytes):
     te.match["ipv4_dst"] = dst_ip
     te.match["tcp_flag"] = b'\x02'
     return te
+
+
+def drop_by_ja3(client: P4RTClient, ja3: str):
+    te = client.TableEntry('ingress.acl.acl')(action='ingress.acl.drop')
+    te.priority = 80
+    ja3 = ja3.split(',')
+    te.match['tls_version'] = ja3[0]
+    ciphers = ja3[1].split('-')
+    for i, cipher in enumerate(ciphers):
+        te.match[f'tls_cipher_{i}'] = cipher
+        if i >= 128:
+            break
+    types = ja3[2].split('-')
+    for i, typ in enumerate(types):
+        te.match[f'tls_ext_type_{i}'] = typ
+        if i >= 32:
+            break
+    groups = ja3[3].split('-')
+    for i, grp in enumerate(groups):
+        te.match[f'tls_grp_{i}'] = grp
+        if i >= 32:
+            break
+    ecs = ja3[4].split('-')
+    for i, ec in enumerate(ecs):
+        te.match[f'tls_ec_{i}'] = ec
+        if i >= 8:
+            break
+    return te

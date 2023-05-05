@@ -29,7 +29,7 @@
 #include "include/acl.p4"
 #include "include/next.p4"
 #include "include/host_meter_table.p4"
-// #include "include/wcmp.p4"
+#include "include/tls.p4"
 
 //------------------------------------------------------------------------------
 // INGRESS PIPELINE
@@ -49,10 +49,9 @@ control ingress(inout headers_t hdr,
             next.apply(hdr, local_metadata, standard_metadata);
         }
         if (!local_metadata.skip_next) {
-            // http
+            tls.apply(hdr, local_metadata, standard_metadata);
         }
         host_meter_control.apply(hdr, local_metadata, standard_metadata);
-        // wcmp_control.apply(hdr, local_metadata, standard_metadata);
      }
 }
 

@@ -25,6 +25,9 @@
 #define IPV4_IHL_MIN 4w5
 #define MAX_PORTS 511
 
+#define TLS_TYPE_HANDSHAKE 22
+#define TLS_HSK_TYPE_CLIENT_HELLO 1
+
 #ifndef _BOOL
 #define _BOOL bool
 #endif
